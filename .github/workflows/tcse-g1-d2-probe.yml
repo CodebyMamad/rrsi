@@ -2,7 +2,9 @@ name: TCSE G1 D2 synthetic model probe
 on:
   push:
     branches: ["tcse/g1-diagnostic-r1"]
-    paths: [".github/workflows/tcse-g1-d2-probe.yml"]
+    paths:
+      - ".github/workflows/tcse-g1-d2-probe.yml"
+      - "scripts/tcse_g1_d2_probe.py"
   workflow_dispatch:
 permissions:
   contents: read

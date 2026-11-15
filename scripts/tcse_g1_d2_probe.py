@@ -34,7 +34,15 @@ def samples():
 
 def probe(model, url, dest, latency_gate):
     from litellm import completion
-    from harbor_terminus2.terminus_json_plain_parser import TerminusJSONPlainParser
+    # Load upstream parser file directly to avoid the Harbor agent runtime in D2.
+    import importlib.util
+    import sys
+    source = Path(__file__).resolve().parents[1] / "third_party" / "harbor_terminus2" / "terminus_json_plain_parser.py"
+    spec = importlib.util.spec_from_file_location("tcse_d2_original_parser", source)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    TerminusJSONPlainParser = module.TerminusJSONPlainParser
     parser = TerminusJSONPlainParser()
     rows = []
     for name, prompt in samples():
