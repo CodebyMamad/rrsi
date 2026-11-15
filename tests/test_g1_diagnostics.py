@@ -57,11 +57,27 @@ def test_success_and_polling_are_not_flagged():
     assert x.summary()["same_command_same_error_repeats"] == 0
 
 
-def test_multiple_commands_not_falsely_attributed():
+def test_repeated_multi_command_batch_is_flagged_without_attribution():
     x = ProgressDiagnostic("feedback")
-    for _ in range(2):
-        x.observe(["badcmd1", "badcmd2"], "fatal: unknown")
+    assert x.observe(["badcmd1", "badcmd2"], "fatal: unknown") is None
+    note = x.observe(["badcmd1", "badcmd2"], "fatal: unknown")
+    assert "batch" in note and "individual command" in note
     assert x.summary()["same_command_same_error_repeats"] == 0
+    assert x.summary()["same_batch_same_error_repeats"] == 1
+
+
+def test_changed_multi_command_batch_does_not_trigger():
+    x = ProgressDiagnostic("feedback")
+    x.observe(["badcmd1", "badcmd2"], "fatal: unknown")
+    assert x.observe(["badcmd3", "badcmd2"], "fatal: unknown") is None
+    assert x.summary()["same_batch_same_error_repeats"] == 0
+
+
+def test_blank_trailing_enter_does_not_mask_repeated_batch():
+    x = ProgressDiagnostic("observe")
+    x.observe(["badcmd1", "badcmd2", "\\n"], "fatal: unknown")
+    x.observe(["badcmd1", "badcmd2", "\\n"], "fatal: unknown")
+    assert x.summary()["same_batch_same_error_repeats"] == 1
 
 
 def test_parser_error_resets_chain():
