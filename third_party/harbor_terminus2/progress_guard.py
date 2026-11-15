@@ -48,6 +48,7 @@ class ProgressDiagnostic:
         self.command_batches = 0
         self.single_command_error_observations = 0
         self.same_command_same_error_repeats = 0
+        self.same_batch_same_error_repeats = 0
         self.feedback_events = 0
         self._previous: tuple[str, str] | None = None
 
@@ -60,12 +61,16 @@ class ProgressDiagnostic:
             self._previous = None
 
     def observe(self, commands: list[str], terminal_output: str) -> str | None:
-        """Return advisory text only in feedback mode and on strong repetition."""
+        """Detect exact consecutive single-command or whole-batch error repeats.
+
+        Never attribute a batch-level error to any individual command.
+        """
         if self.mode == "off":
             return None
         self.turns += 1
         self.command_batches += int(bool(commands))
-        if len(commands) != 1 or not commands[0].strip():
+        clean_commands = [c for c in commands if c.strip()]
+        if not clean_commands:
             self._previous = None
             return None
         error_hash = _failure_fingerprint(terminal_output)
@@ -73,18 +78,22 @@ class ProgressDiagnostic:
             self._previous = None
             return None
         self.single_command_error_observations += 1
-        current = (_sha(commands[0]), error_hash)
+        current = (_sha("\\x00".join(clean_commands)), error_hash)
         repeated = self._previous == current
         self._previous = current
         if not repeated:
             return None
-        self.same_command_same_error_repeats += 1
+        if len(clean_commands) == 1:
+            self.same_command_same_error_repeats += 1
+        else:
+            self.same_batch_same_error_repeats += 1
         if self.mode == "feedback":
             self.feedback_events += 1
             return (
                 "PROGRESS DIAGNOSTIC (advisory): The immediately preceding "
-                "single terminal command matches the prior command and "
-                "the visible error text matches too. No progress is confirmed "
+                "terminal command batch matches the prior batch and "
+                "the visible error lines match too. The signal does not identify "
+                "which individual command caused the error. No progress is confirmed "
                 "by this signal alone; check whether a different approach or "
                 "new evidence is needed. Do not repeat solely because the "
                 "previous attempt failed. You remain responsible for the next action."
@@ -100,5 +109,6 @@ class ProgressDiagnostic:
             "command_batches": self.command_batches,
             "single_command_error_observations": self.single_command_error_observations,
             "same_command_same_error_repeats": self.same_command_same_error_repeats,
+            "same_batch_same_error_repeats": self.same_batch_same_error_repeats,
             "feedback_events": self.feedback_events,
         }
