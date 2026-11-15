@@ -1,0 +1,58 @@
+name: TCSE G1 D2 synthetic model probe
+on:
+  push:
+    branches: ["tcse/g1-diagnostic-r1"]
+    paths: [".github/workflows/tcse-g1-d2-probe.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tcse-g1-d2-synthetic
+  cancel-in-progress: false
+jobs:
+  synthetic-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      PYTHONPATH: third_party
+      LITELLM_LOG: ERROR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install provider-neutral core
+        run: python -m pip install -e '.[dev]'
+      - name: Start local free model in Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          docker run -d --name tcse-d2-ollama \
+            -p 127.0.0.1:11434:11434 \
+            -e OLLAMA_NUM_PARALLEL=1 -e OLLAMA_MAX_LOADED_MODELS=1 \
+            ollama/ollama@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
+          for i in $(seq 1 50); do
+            curl -fsS http://127.0.0.1:11434/api/tags >/dev/null && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          docker exec tcse-d2-ollama ollama pull qwen2.5-coder:1.5b
+          docker exec tcse-d2-ollama ollama list
+      - name: Synthetic protocol and latency probe — NO benchmark tasks
+        run: timeout --signal=TERM --kill-after=10s 900s python scripts/tcse_g1_d2_probe.py
+      - name: Store bounded receipts
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p tcse_d2_receipts
+          git rev-parse HEAD > tcse_d2_receipts/commit.txt
+          python -V >> tcse_d2_receipts/commit.txt
+          docker exec tcse-d2-ollama ollama list >> tcse_d2_receipts/commit.txt 2>&1 || true
+          docker logs tcse-d2-ollama --tail 40 > tcse_d2_receipts/ollama_tail.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tcse-g1-d2-synthetic-probe
+          retention-days: 14
+          path: tcse_d2_receipts/
