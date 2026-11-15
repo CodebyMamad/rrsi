@@ -1,0 +1,47 @@
+name: TCSE D7 host-owned execution and isolation gate
+on:
+  push:
+    branches: ["tcse/g1-d7-host-isolation-2026-11-15"]
+    paths:
+      - ".github/workflows/tcse-g1-d7-host.yml"
+      - "third_party/harbor_terminus2/host_action_coordinator.py"
+      - "tests/test_g1_d7_host.py"
+      - "scripts/tcse_g1_d7_docker_gate.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-and-docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install baseline, Harbor 0.26 and D7 tests
+        run: |
+          python -m pip install -e '.[dev]' 'harbor==0.26.0'
+      - name: Offline D4-D7 regression
+        env:
+          PYTHONPATH: third_party
+        run: |
+          python -m pytest -q tests
+          python -m compileall -q third_party/harbor_terminus2
+      - name: Host-worker Docker isolation test with no model calls
+        env:
+          PYTHONPATH: third_party
+        run: |
+          python scripts/tcse_g1_d7_docker_gate.py
+      - name: Record checkpoint and receipt
+        if: always()
+        run: |
+          mkdir -p tcse_d7_receipts
+          git rev-parse HEAD > tcse_d7_receipts/source_commit.txt
+          docker version --format 'Docker engine {{.Server.Version}}' > tcse_d7_receipts/docker_version.txt 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tcse-d7-host-boundary
+          path: tcse_d7_receipts/
+          retention-days: 14
