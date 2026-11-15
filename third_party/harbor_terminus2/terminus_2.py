@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import os
 import shlex
 import time
 import uuid
@@ -35,6 +36,7 @@ from .terminus_json_plain_parser import (
 from .terminus_xml_plain_parser import (
     TerminusXMLPlainParser,
 )
+from .progress_guard import ProgressDiagnostic
 from .tmux_session import TmuxSession
 from harbor.environments.base import BaseEnvironment
 from harbor.llms.base import (
@@ -1367,6 +1369,7 @@ so ask everything you need to know."""
             self._context.cost_usd = chat.total_cost if chat.total_cost > 0 else None
 
             if feedback and "ERROR:" in feedback:
+                self._tcse_progress.record_parser(error=True, warning="WARNINGS:" in feedback)
                 prompt = (
                     f"Previous response had parsing errors:\n{feedback}\n\n"
                     f"Please fix these issues and provide a proper "
@@ -1410,6 +1413,7 @@ so ask everything you need to know."""
                 )
                 continue
 
+            self._tcse_progress.record_parser(warning=bool(feedback and "WARNINGS:" in feedback))
             timeout_occurred, terminal_output = await self._execute_commands(
                 commands,
                 self._session,
@@ -1436,6 +1440,13 @@ so ask everything you need to know."""
                     )
                 else:
                     observation = self._limit_output_length(terminal_output)
+
+            # Optional generic advisory; baseline/off is byte-for-byte observation-equivalent.
+            tcse_progress_note = self._tcse_progress.observe(
+                [cmd.keystrokes for cmd in commands], terminal_output
+            )
+            if tcse_progress_note and not is_task_complete:
+                observation = observation + "\n\n" + tcse_progress_note
 
             # Record the step in trajectory
             cache_tokens_used = chat.total_cache_tokens - tokens_before_cache
@@ -1568,6 +1579,7 @@ so ask everything you need to know."""
         self._pending_subagent_refs = None
         self._pending_handoff_prompt = None
         self._session_id = self._user_provided_session_id or str(uuid.uuid4())
+        self._tcse_progress = ProgressDiagnostic(os.environ.get("TCSE_G1_PROGRESS_MODE", "off"))
 
     @override
     async def run(
@@ -1650,6 +1662,8 @@ so ask everything you need to know."""
                 "api_request_times_msec": self._api_request_times,
                 "summarization_count": self._summarization_count,
             }
+            if self._tcse_progress.mode != "off":
+                context.metadata["tcse_progress_diagnostic"] = self._tcse_progress.summary()
             if self._store_all_messages:
                 context.metadata["all_messages"] = self._chat.messages
 

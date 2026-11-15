@@ -58,6 +58,11 @@ fi
 if [[ -n "${RRSI_POLICY_API_KEY:-}" ]]; then
   export OPENAI_API_KEY="${RRSI_POLICY_API_KEY}"
 fi
+if [[ -n "${TCSE_G1_PROGRESS_MODE:-}" ]]; then
+  case "$TCSE_G1_PROGRESS_MODE" in off|observe|feedback) ;; *)
+    echo "Invalid TCSE_G1_PROGRESS_MODE (off, observe, feedback)" >&2; exit 2 ;;
+  esac
+fi
 VENV="${RRSI_CODING_VENV:-$REPO/.venv}"
 
 exec "$VENV/bin/harbor" run \

@@ -1,0 +1,27 @@
+name: TCSE G1 D1 isolated offline checks
+on:
+  push:
+    branches: ["tcse/g1-diagnostic-r1"]
+    paths:
+      - "third_party/harbor_terminus2/**"
+      - "tests/test_g1_diagnostics.py"
+      - "domains/coding/scripts/run_eval.sh"
+      - ".github/workflows/tcse-g1-d1-offline.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests
+          python -m compileall -q third_party/harbor_terminus2
+          bash -n domains/coding/scripts/run_eval.sh
+          sh -n domains/coding/bin/docker
