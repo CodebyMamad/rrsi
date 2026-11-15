@@ -63,6 +63,12 @@ if [[ -n "${TCSE_G1_PROGRESS_MODE:-}" ]]; then
     echo "Invalid TCSE_G1_PROGRESS_MODE (off, observe, feedback)" >&2; exit 2 ;;
   esac
 fi
+if [[ "${RRSI_POLICY_JSON_MODE:-0}" == "1" ]]; then
+  BASE_ARGS+=(--agent-kwarg 'llm_call_kwargs={"response_format":{"type":"json_object"}}')
+elif [[ "${RRSI_POLICY_JSON_MODE:-0}" != "0" ]]; then
+  echo "RRSI_POLICY_JSON_MODE must be 0 or 1" >&2
+  exit 2
+fi
 VENV="${RRSI_CODING_VENV:-$REPO/.venv}"
 
 exec "$VENV/bin/harbor" run \

@@ -1,0 +1,117 @@
+name: TCSE G1 D3 observe-versus-feedback pilot
+on:
+  push:
+    branches: ["tcse/g1-diagnostic-r1"]
+    paths: [".github/workflows/tcse-g1-d3-paired.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tcse-g1-d3-paired
+  cancel-in-progress: false
+jobs:
+  paired-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 27
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        mode: [observe, feedback]
+    env:
+      RRSI_POLICY_MODEL: ollama_chat/qwen2.5-coder:1.5b
+      RRSI_POLICY_API_BASE: http://127.0.0.1:11434
+      RRSI_POLICY_MAX_TURNS: "12"
+      RRSI_POLICY_JSON_MODE: "1"
+      RRSI_SEARCH_BACKEND: litellm
+      RRSI_SEARCH_MODEL: ollama_chat/qwen2.5-coder:1.5b
+      RRSI_SEARCH_API_BASE: http://127.0.0.1:11434
+      TCSE_G1_PROGRESS_MODE: ${{ matrix.mode }}
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_CONTEXT_LENGTH: "8192"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run offline tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests
+          bash -n domains/coding/scripts/run_eval.sh
+      - name: Initialize Harbor
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m venv domains/coding/.venv
+          domains/coding/.venv/bin/python -m pip install -U pip
+          domains/coding/.venv/bin/pip install 'harbor==0.26.0'
+          PYTHONPATH=third_party domains/coding/.venv/bin/python -c 'from harbor_terminus2 import AgentHarness; assert AgentHarness.name()=="rrsi-terminus2"'
+      - name: Launch pinned local Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name tcse-d3-ollama -p 127.0.0.1:11434:11434 \
+            -e OLLAMA_NUM_PARALLEL=1 -e OLLAMA_MAX_LOADED_MODELS=1 \
+            -e OLLAMA_CONTEXT_LENGTH=8192 \
+            ollama/ollama@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:11434/api/tags >/dev/null && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          docker exec tcse-d3-ollama ollama pull qwen2.5-coder:1.5b
+      - name: Execute official two-task G1 pilot (not G2)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "G1 D3 mode=$TCSE_G1_PROGRESS_MODE ; JSON=1 ; NOT original-paper reproduction"
+          timeout --signal=TERM --kill-after=15s 1380s python rrsi.py --domain coding smoke
+      - name: Save verifier and metadata receipts
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p tcse_d3_receipts
+          git rev-parse HEAD > tcse_d3_receipts/commit.txt
+          python -V >> tcse_d3_receipts/commit.txt
+          echo "variant=$TCSE_G1_PROGRESS_MODE" >> tcse_d3_receipts/commit.txt
+          docker exec tcse-d3-ollama ollama list >> tcse_d3_receipts/commit.txt 2>&1 || true
+          docker logs tcse-d3-ollama --tail 80 > tcse_d3_receipts/ollama.log 2>&1 || true
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          result=[]
+          for p in sorted(Path('runs/coding/jobs/smoke').glob('*/result.json')):
+              try:
+                  d=json.loads(p.read_text())
+                  a=d.get('agent_result') or {}
+                  md=a.get('metadata') or {}
+                  result.append(dict(
+                      task=p.parent.name.split('__')[0],
+                      reward=((d.get('verifier_result') or {}).get('rewards') or {}).get('reward'),
+                      exception_type=(d.get('exception_info') or {}).get('exception_type'),
+                      episodes=md.get('n_episodes'),
+                      progress=md.get('tcse_progress_diagnostic'),
+                      api_msec=md.get('api_request_times_msec'),
+                      input_tokens=a.get('n_input_tokens'),
+                      output_tokens=a.get('n_output_tokens')
+                  ))
+              except Exception as exc:
+                  result.append(dict(parse_error=type(exc).__name__))
+          summary=dict(phase='D3_G1_PAIRED',variant=__import__('os').environ.get('TCSE_G1_PROGRESS_MODE'),trials=result)
+          Path('tcse_d3_receipts/summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+          print(json.dumps(summary,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tcse-d3-${{ matrix.mode }}-1p5b
+          retention-days: 14
+          path: |
+            tcse_d3_receipts/
+            runs/coding/logs/
+            runs/coding/jobs/smoke/
