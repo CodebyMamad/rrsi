@@ -48,6 +48,10 @@ if [[ "$MODEL_NAME" == vertex_ai/* ]]; then
 fi
 # Harbor accepts repeated --agent-kwarg key=value flags.
 BASE_ARGS=()
+if [[ -n "${RRSI_POLICY_MAX_TURNS:-}" ]]; then
+  [[ "${RRSI_POLICY_MAX_TURNS}" =~ ^[0-9]+$ ]] || { echo "RRSI_POLICY_MAX_TURNS must be positive integer" >&2; exit 2; }
+  BASE_ARGS+=(--agent-kwarg "max_turns=${RRSI_POLICY_MAX_TURNS}")
+fi
 if [[ -n "${RRSI_POLICY_API_BASE:-}" ]]; then
   BASE_ARGS+=(--agent-kwarg "api_base=\"${RRSI_POLICY_API_BASE}\"")
 fi
