@@ -54,6 +54,10 @@ import briefs                            # noqa: E402
 import render                            # noqa: E402
 
 CFG = json.loads((HERE / "rrsi.json").read_text())
+# Preserve checked-in research configuration; only override model at runtime.
+if os.environ.get("RRSI_POLICY_MODEL"):
+    CFG["policy_model"] = os.environ["RRSI_POLICY_MODEL"]
+    CFG["policy_label"] = os.environ["RRSI_POLICY_MODEL"]
 PYBIN = os.environ.get("RRSI_CODING_PYTHON", str(HERE / ".venv" / "bin" / "python"))
 
 

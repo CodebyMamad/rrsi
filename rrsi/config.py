@@ -49,6 +49,7 @@ tokens per trial, Delta C is RELATIVE (Eq. tokenbudget), so beta0 = 0.10 means
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -91,6 +92,12 @@ class RRSIConfig:
         kw = {k: v for k, v in raw.items() if k in known}
         kw["notes"] = {k: v for k, v in raw.items() if k not in known}
         kw.update({k: v for k, v in overrides.items() if v is not None})
+        # Provider selection is runtime configuration, not an edit to research logic.
+        shared = os.environ.get("RRSI_SEARCH_MODEL")
+        for role in ("proposer", "analyst", "critic"):
+            model = os.environ.get(f"RRSI_{role.upper()}_MODEL") or shared
+            if model and overrides.get(role + "_model") is None:
+                kw[role + "_model"] = model
         return cls(**kw)
 
     def dump(self) -> dict:

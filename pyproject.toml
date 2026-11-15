@@ -21,10 +21,11 @@ license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
     # the search roles (proposer, analyst, critic) call Claude on Vertex AI
-    "anthropic[vertex]>=0.40",
+    "litellm>=1.50",  # provider-neutral research roles
 ]
 
 [project.optional-dependencies]
+vertex = ["anthropic[vertex]>=0.40"]  # optional original backend
 # The benchmark runners usually live in their own virtual environment (see
 # RRSI_AGENT_PYTHON in the README); these extras list what they import.
 agentic = [

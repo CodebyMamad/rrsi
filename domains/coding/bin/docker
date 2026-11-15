@@ -1,2 +1,10 @@
 #!/bin/sh
-exec sudo -E -n /usr/bin/docker "$@"
+# Ordinary Docker socket works without sudo in Codespaces and rootless environments.
+DOCKER_BIN="${RRSI_SYSTEM_DOCKER:-/usr/bin/docker}"
+if [ ! -x "$DOCKER_BIN" ] && [ -x /usr/local/bin/docker ]; then
+  DOCKER_BIN=/usr/local/bin/docker
+fi
+if [ "${RRSI_DOCKER_USE_SUDO:-0}" = "1" ]; then
+  exec sudo -E -n "$DOCKER_BIN" "$@"
+fi
+exec "$DOCKER_BIN" "$@"

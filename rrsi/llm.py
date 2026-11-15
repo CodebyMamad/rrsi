@@ -89,10 +89,55 @@ def extract_json(text: str) -> str:
     return t
 
 
+def _generate_with_litellm(prompt: str, system: str | None, max_retries: int,
+                           json_only: bool, model: str, max_tokens: int,
+                           cache_prefix: str | None) -> str:
+    """Provider-neutral research roles; opt-in Vertex legacy path remains available."""
+    from litellm import completion
+    if not model:
+        raise ValueError("Set RRSI_SEARCH_MODEL or per-role model env variable")
+    prompt_text = ((cache_prefix + "\n\n" + prompt) if cache_prefix else prompt)
+    messages = []
+    if system or json_only:
+        messages.append({"role": "system",
+                         "content": (system or "") + (_JSON_SUFFIX if json_only else "")})
+    messages.append({"role": "user", "content": prompt_text})
+    limit = int(os.environ.get("RRSI_SEARCH_MAX_TOKENS", "8192"))
+    if limit <= 0:
+        raise ValueError("RRSI_SEARCH_MAX_TOKENS must be positive")
+    kwargs = {"model": model, "messages": messages,
+              "max_tokens": min(max_tokens, limit)}
+    api_base = os.environ.get("RRSI_SEARCH_API_BASE")
+    api_key = os.environ.get("RRSI_SEARCH_API_KEY")
+    if api_base:
+        kwargs["api_base"] = api_base
+    if api_key:
+        kwargs["api_key"] = api_key
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            result = completion(**kwargs)
+            content = result.choices[0].message.content
+            if isinstance(content, str) and content.strip():
+                return extract_json(content) if json_only else content
+            last_error = RuntimeError("Empty non-text LLM response")
+        except Exception as exc:
+            last_error = exc
+        if attempt + 1 < max_retries:
+            time.sleep(min(2 ** attempt, 8))
+    raise RuntimeError(f"LiteLLM call failed after {max_retries} attempts: {last_error}")
+
+
 def generate(prompt: str, system: str | None = None, max_retries: int = 6,
              json_only: bool = False, model: str | None = None,
              max_tokens: int = MAX_TOKENS, cache_prefix: str | None = None) -> str:
     mdl = model or MODEL
+    backend = os.environ.get("RRSI_SEARCH_BACKEND", "litellm").lower()
+    if backend == "litellm":
+        return _generate_with_litellm(prompt, system, max_retries, json_only,
+                                      mdl, max_tokens, cache_prefix)
+    if backend != "vertex":
+        raise ValueError(f"Unsupported RRSI_SEARCH_BACKEND: {backend}")
     sys_prompt = (system or "") + (_JSON_SUFFIX if json_only else "")
     content = ([{"type": "text", "text": cache_prefix,
                  "cache_control": {"type": "ephemeral"}},

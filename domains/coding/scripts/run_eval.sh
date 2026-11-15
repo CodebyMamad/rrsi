@@ -37,15 +37,31 @@ done
 
 export PATH="$REPO/bin:$PATH"            # docker -> sudo -E docker shim
 export PYTHONPATH="$(cd "$REPO/../.." && pwd)/third_party"   # so --agent harbor_terminus2:AgentHarness resolves
-export VERTEXAI_PROJECT="${VERTEXAI_PROJECT:?set VERTEXAI_PROJECT (GCP project for Vertex AI)}"
-export VERTEXAI_LOCATION="${VERTEXAI_LOCATION:-global}"
+MODEL_NAME="${MODEL:-${RRSI_POLICY_MODEL:-}}"
+if [[ -z "$MODEL_NAME" ]]; then
+  echo "ERROR: select a policy model with RRSI_POLICY_MODEL or MODEL" >&2
+  exit 2
+fi
+if [[ "$MODEL_NAME" == vertex_ai/* ]]; then
+  : "${VERTEXAI_PROJECT:?Vertex explicitly selected; set VERTEXAI_PROJECT}"
+  export VERTEXAI_LOCATION="${VERTEXAI_LOCATION:-global}"
+fi
+# Harbor accepts repeated --agent-kwarg key=value flags.
+BASE_ARGS=()
+if [[ -n "${RRSI_POLICY_API_BASE:-}" ]]; then
+  BASE_ARGS+=(--agent-kwarg "api_base=\"${RRSI_POLICY_API_BASE}\"")
+fi
+if [[ -n "${RRSI_POLICY_API_KEY:-}" ]]; then
+  export OPENAI_API_KEY="${RRSI_POLICY_API_KEY}"
+fi
 VENV="${RRSI_CODING_VENV:-$REPO/.venv}"
 
 exec "$VENV/bin/harbor" run \
   -d "$DATASET" \
   --agent harbor_terminus2:AgentHarness \
-  -m "${MODEL:-vertex_ai/gemini-3.5-flash}" \
+  -m "$MODEL_NAME" \
   --agent-kwarg 'llm_kwargs={"num_retries": 10}' \
+  "${BASE_ARGS[@]}" \
   -k "$N_ATTEMPTS" \
   -n "$N_CONCURRENT" \
   --jobs-dir "$JOBS_DIR" \
