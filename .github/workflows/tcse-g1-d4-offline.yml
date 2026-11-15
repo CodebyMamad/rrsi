@@ -1,0 +1,30 @@
+name: TCSE G1 D4 execution contract offline gate
+on:
+  push:
+    branches: ["tcse/g1-action-contract-2026-11-15"]
+    paths:
+      - ".github/workflows/tcse-g1-d4-offline.yml"
+      - "third_party/harbor_terminus2/**"
+      - "tests/test_g1_action_contract.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install exact Harbor version used for negative D3
+        run: |
+          python -m pip install -e '.[dev]' 'harbor==0.26.0'
+      - name: Run baseline + D4 unit and harness integration tests
+        env:
+          PYTHONPATH: third_party
+        run: |
+          python -m pytest -q tests
+          python -m compileall -q third_party/harbor_terminus2
+          bash -n domains/coding/scripts/run_eval.sh

@@ -37,6 +37,7 @@ from .terminus_xml_plain_parser import (
     TerminusXMLPlainParser,
 )
 from .progress_guard import ProgressDiagnostic
+from .action_contract import ActionContract
 from .tmux_session import TmuxSession
 from harbor.environments.base import BaseEnvironment
 from harbor.llms.base import (
@@ -1182,6 +1183,15 @@ so ask everything you need to know."""
         )
 
         result = self._parser.parse_response(llm_response.content)
+        # D4: opt-in submission boundary; invalid batches never reach tmux.
+        if not result.error and result.commands:
+            action_error = self._tcse_action_contract.validate(
+                [cmd.keystrokes for cmd in result.commands]
+            )
+            if action_error:
+                result.commands = []
+                result.is_task_complete = False
+                result.error = action_error
 
         feedback = ""
         if result.error:
@@ -1580,6 +1590,7 @@ so ask everything you need to know."""
         self._pending_handoff_prompt = None
         self._session_id = self._user_provided_session_id or str(uuid.uuid4())
         self._tcse_progress = ProgressDiagnostic(os.environ.get("TCSE_G1_PROGRESS_MODE", "off"))
+        self._tcse_action_contract = ActionContract(os.environ.get("TCSE_G1_ACTION_CONTRACT", "off"))
 
     @override
     async def run(
@@ -1664,6 +1675,8 @@ so ask everything you need to know."""
             }
             if self._tcse_progress.mode != "off":
                 context.metadata["tcse_progress_diagnostic"] = self._tcse_progress.summary()
+            if self._tcse_action_contract.mode != "off":
+                context.metadata["tcse_execution_contract"] = self._tcse_action_contract.receipt()
             if self._store_all_messages:
                 context.metadata["all_messages"] = self._chat.messages
 
