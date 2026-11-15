@@ -90,3 +90,12 @@ an honest-host consistency constraint, not cryptographic authentication:
 a malicious producer could lie about its source_run_id. Real harness
 integration therefore still requires a trusted receipt producer.
 The revised offline D5 test count is 18.
+
+
+## D5.2 uncertainty preservation
+
+The earlier snapshot encoded an **unknown** process exit as Boolean False
+for "process_exited_nonzero". That conflated absence of a trusted host exit
+receipt with a known successful process exit. Corrected to three values:
+None (unknown), False (trusted zero exit) and True (trusted nonzero exit).
+Added a regression test preserving this distinction. Total D5 tests: 19.

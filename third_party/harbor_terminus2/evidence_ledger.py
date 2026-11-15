@@ -74,7 +74,7 @@ class Record:
             "terminal_observed": self.terminal_observed,
             "host_exit_status": self.host_exit_status,
             "process_exited_nonzero": (
-                self.host_exit_status is not None and self.host_exit_status != 0
+                None if self.host_exit_status is None else self.host_exit_status != 0
             ),
             "effect": self.effect.value,
             "effect_probe_sequence": self.effect_probe_sequence,

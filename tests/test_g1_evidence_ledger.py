@@ -163,7 +163,7 @@ def test_process_failure_not_inferred_from_output():
     a = ledger()
     a.submit("a1")
     a.observe("a1", "fatal: failed")
-    assert a.snapshot("a1")["process_exited_nonzero"] is False
+    assert a.snapshot("a1")["process_exited_nonzero"] is None
     assert a.snapshot("a1")["host_exit_status"] is None
 
 
@@ -207,3 +207,12 @@ def test_missing_origin_is_not_accepted():
     a.propose("x", Goal("target-file-changed"))
     with pytest.raises(TypeError):
         a.submit("x")
+
+
+def test_zero_exit_is_known_not_failed_and_differs_from_unknown():
+    a = ledger()
+    a.submit("a1")
+    a.observe("a1", "Done")
+    assert a.snapshot("a1")["process_exited_nonzero"] is None
+    a.host_exit("a1", 0)
+    assert a.snapshot("a1")["process_exited_nonzero"] is False
