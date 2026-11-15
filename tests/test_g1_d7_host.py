@@ -139,3 +139,46 @@ def test_no_probe_when_missing_dispatch_receipt(tmp_path):
     with p:
         got=a.adjudicate(action_id="1",agent_response=encode("pwd\n"),source_run_id="host-run")
     assert not got.observed_false_to_true and ex.pauses==0
+
+
+def test_transport_exception_abstains_not_rejected(tmp_path):
+    def failure(c):
+        raise RuntimeError("post-send connection closed")
+    a,p,ex=setup(tmp_path,failure)
+    with p:
+        got=a.adjudicate(action_id="x",agent_response=encode("pwd\n"),source_run_id="host-run")
+    assert got.disposition=="dispatch_unknown"
+    assert a.ledger.snapshot("x")["dispatch"]=="dispatch_unknown"
+    assert not got.task_solved_proven and got.after_effect is None
+
+
+def test_explicit_unknown_dispatch_not_a_failure(tmp_path):
+    a,p,ex=setup(tmp_path,lambda c:ExecutionReceipt(None,"Docker transport ambiguous",None))
+    with p:
+        got=a.adjudicate(action_id="x",agent_response=encode("pwd\n"),source_run_id="host-run")
+    assert got.dispatch=="unknown" and a.ledger.snapshot("x")["effect"]=="unchecked"
+    assert ex.pauses==0
+
+
+def test_exactly_two_probes_per_successful_window(tmp_path):
+    a,p,ex=setup(tmp_path,lambda c:ExecutionReceipt(True,"DONE",0))
+    original=p.sample
+    sampled=[]
+    def spy(goal):
+        sampled.append(goal)
+        return original(goal)
+    p.sample=spy
+    with p:
+        got=a.adjudicate(action_id="x",agent_response=encode("pwd\n"),source_run_id="host-run")
+    assert got.disposition=="postcondition_observed"
+    assert len(sampled)==2  # pre and one host-owned post, not a conflicting third probe
+
+
+def test_reserved_cli_status_must_not_be_treated_as_command_receipt(monkeypatch):
+    from harbor_terminus2.host_action_coordinator import DockerExecutor
+    from types import SimpleNamespace
+    def fake(*args,**kwargs):
+        return SimpleNamespace(returncode=125,stdout="",stderr="Error response from daemon")
+    monkeypatch.setattr("harbor_terminus2.host_action_coordinator.subprocess.run",fake)
+    report=DockerExecutor("host-chosen").execute("pwd\n")
+    assert report.sent is None and report.host_exit_code is None

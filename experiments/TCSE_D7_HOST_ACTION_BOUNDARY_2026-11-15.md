@@ -44,3 +44,20 @@ container isolation job must confirm executable boundary properties.
 D7 full passage requires those properties and a host receipt invariant;
 otherwise verdict RESTRICTED_ONLY or BLOCK. D8 may begin only if the
 same isolation is preserved in the intended G1 evaluation path.
+
+
+## D7.1 adversarial receipt correction (review prior to gate)
+
+Two independent defects were found in the first implementation:
+1. D6 session.finish and D5 check_effect performed TWO postcondition reads;
+   privileged host changes between reads could produce mutually inconsistent
+   evidence. Now D5 consumes the exact frozen D6 host result under quiescence.
+2. A Docker CLI transport exception was incorrectly equated with "not sent".
+   The host cannot know whether a command was submitted before the exception.
+   The new D5 UNKNOWN dispatch state preserves this uncertainty. Ambiguous
+   Docker CLI statuses 125–127 and subprocess timeouts also abstain rather than
+   certify dispatch. This can reject valid shell exits with those codes; that
+   conservative false-negative behavior is admitted.
+
+The resulting model has one pre-read and one post-read in a quiesced worker,
+no duplicates, and no success claims from ambiguous transport receipts.

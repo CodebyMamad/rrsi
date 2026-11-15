@@ -23,6 +23,7 @@ class Dispatch(str, Enum):
     PROPOSED = "proposed"
     REJECTED = "rejected"
     SUBMITTED = "submitted"  # Keystrokes sent, not proof of execution.
+    UNKNOWN = "dispatch_unknown"  # Host transport may have sent it; abstain.
 
 
 class Effect(str, Enum):
@@ -131,6 +132,15 @@ class EvidenceLedger:
             raise EvidenceError("Only proposed actions can be dispatched once")
         r.dispatch = Dispatch.SUBMITTED
         self._event(action_id, "submitted_no_execution_certification")
+
+    def unknown_dispatch(self, action_id: str, *, source_run_id: str) -> None:
+        """Conservatively mark unresolved host transport without asserting failure."""
+        self._require_origin(source_run_id)
+        r = self._record(action_id)
+        if r.dispatch != Dispatch.PROPOSED:
+            raise EvidenceError("Uncertain dispatch requires a proposed action")
+        r.dispatch = Dispatch.UNKNOWN
+        self._event(action_id, "dispatch_transport_indeterminate")
 
     def observe(self, action_id: str, terminal_text: str, *, source_run_id: str) -> None:
         """Untrusted terminal text, including 'success', cannot prove effects."""

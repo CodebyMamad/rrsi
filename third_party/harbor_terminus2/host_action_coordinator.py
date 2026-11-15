@@ -16,13 +16,13 @@ from typing import Protocol
 
 from .action_contract import ActionContract
 from .evidence_ledger import EvidenceLedger, Goal
-from .host_file_probe import FilePredicate, HostFileProbe, HostVerificationSession
+from .host_file_probe import FilePredicate, HostFileProbe, HostVerificationSession, Status
 from .terminus_json_plain_parser import TerminusJSONPlainParser
 
 
 @dataclass(frozen=True)
 class ExecutionReceipt:
-    sent: bool
+    sent: bool | None  # None denotes transport ambiguity; never infer a submission
     terminal_text: str
     host_exit_code: int | None
 
@@ -48,6 +48,25 @@ class ActionOutcome:
     refusal_reason: str | None = None
 
 
+class _FrozenHostProbe:
+    """Adapter for a single result of the already trusted D6 host sample.
+
+    Prevents two inconsistent filesystem checks from being merged into one
+    synthetic "verified" action. Never obtains evidence from model output.
+    """
+    def __init__(self, goal_id: str, status: Status):
+        self.goal_id, self.status = goal_id, status
+
+    def check(self, goal: Goal) -> bool | None:
+        if goal.identifier != self.goal_id:
+            raise ValueError("Host goal mismatch")
+        if self.status is Status.TRUE:
+            return True
+        if self.status is Status.FALSE:
+            return False
+        return None
+
+
 class HostActionCoordinator:
     """Host configuration cannot be changed by agent JSON or terminal output."""
 
@@ -69,6 +88,14 @@ class HostActionCoordinator:
         return ActionOutcome(
             self.run_id, action_id, "rejected_without_dispatch", "rejected",
             None, None, None, False, False, refusal_reason=reason
+        )
+
+    def _unknown_dispatch(self, action_id: str, before_effect: str,
+                          reason: str) -> ActionOutcome:
+        self.ledger.unknown_dispatch(action_id, source_run_id=self.run_id)
+        return ActionOutcome(
+            self.run_id, action_id, "dispatch_unknown", "unknown",
+            before_effect, None, None, False, False, refusal_reason=reason
         )
 
     def adjudicate(self, *, action_id: str, agent_response: str,
@@ -94,10 +121,14 @@ class HostActionCoordinator:
         try:
             execution = self.executor.execute(cmd)
         except Exception:
-            # Unknown transport failure is not a verified execution.
-            return self._refusal(action_id, "Host executor refused/failed before dispatch receipt")
-        if not execution.sent:
-            return self._refusal(action_id, "Host executor did not confirm dispatch")
+            # An exception may arise AFTER a transport sent the command.
+            return self._unknown_dispatch(action_id, pre.status.value,
+                                          "Executor raised without a dispatch receipt")
+        if execution.sent is None:
+            return self._unknown_dispatch(action_id, pre.status.value,
+                                          "Transport cannot establish dispatch")
+        if execution.sent is False:
+            return self._refusal(action_id, "Host executor explicitly reported no dispatch")
         self.ledger.submit(action_id, source_run_id=self.run_id)
         self.ledger.observe(action_id, execution.terminal_text, source_run_id=self.run_id)
         if type(execution.host_exit_code) is int:
@@ -108,7 +139,9 @@ class HostActionCoordinator:
             with self.executor.quiesced():
                 receipt = self.session.finish(action_id, source_run_id=self.run_id)
                 effect = self.ledger.check_effect(
-                    action_id, self.probe, source_run_id=self.run_id
+                    action_id,
+                    _FrozenHostProbe(self.goal.identifier, receipt.after),
+                    source_run_id=self.run_id
                 )
         except Exception:
             # Failed quiescence/probe MUST NOT become a fabricated false/true.
@@ -150,13 +183,16 @@ class DockerExecutor:
                 capture_output=True, text=True, timeout=self.timeout_seconds,
                 check=False,
             )
+            if r.returncode in (125, 126, 127):
+                # Reserved CLI/transport statuses overlap possible shell exits;
+                # conservatively abstain rather than claim a process receipt.
+                return ExecutionReceipt(None, (r.stdout + r.stderr)[-16000:], None)
             return ExecutionReceipt(True, (r.stdout + r.stderr)[-16000:], r.returncode)
         except subprocess.TimeoutExpired as exc:
             # May still have been submitted; no trusted exit receipt.
-            output = (exc.stdout or b"") + (exc.stderr or b"")
-            if isinstance(output, bytes):
-                output = output.decode("utf-8", "replace")
-            return ExecutionReceipt(True, str(output)[-16000:], None)
+            parts = [p.decode("utf-8", "replace") if isinstance(p, bytes) else (p or "")
+                     for p in (exc.stdout, exc.stderr)]
+            return ExecutionReceipt(None, "".join(parts)[-16000:], None)
 
     @contextmanager
     def quiesced(self):
