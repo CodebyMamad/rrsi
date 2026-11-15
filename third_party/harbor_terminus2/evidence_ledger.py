@@ -97,6 +97,10 @@ class EvidenceLedger:
     def _event(self, action_id: str, kind: str, digest: str | None = None) -> None:
         self._events.append(Event(len(self._events) + 1, action_id, kind, digest))
 
+    def _require_origin(self, source_run_id: str) -> None:
+        if source_run_id != self.run_id:
+            raise EvidenceError("Receipt source run does not match ledger run")
+
     def _record(self, action_id: str) -> Record:
         try:
             return self._records[action_id]
@@ -111,23 +115,26 @@ class EvidenceLedger:
         self._records[action_id] = Record(action_id=action_id, goal=goal)
         self._event(action_id, "proposed")
 
-    def reject(self, action_id: str) -> None:
+    def reject(self, action_id: str, *, source_run_id: str) -> None:
+        self._require_origin(source_run_id)
         r = self._record(action_id)
         if r.dispatch != Dispatch.PROPOSED:
             raise EvidenceError("Only proposed actions can be rejected")
         r.dispatch = Dispatch.REJECTED
         self._event(action_id, "rejected_before_dispatch")
 
-    def submit(self, action_id: str) -> None:
+    def submit(self, action_id: str, *, source_run_id: str) -> None:
         """Host reports sent keystrokes; this DOES NOT prove execution/success."""
+        self._require_origin(source_run_id)
         r = self._record(action_id)
         if r.dispatch != Dispatch.PROPOSED:
             raise EvidenceError("Only proposed actions can be dispatched once")
         r.dispatch = Dispatch.SUBMITTED
         self._event(action_id, "submitted_no_execution_certification")
 
-    def observe(self, action_id: str, terminal_text: str) -> None:
+    def observe(self, action_id: str, terminal_text: str, *, source_run_id: str) -> None:
         """Untrusted terminal text, including 'success', cannot prove effects."""
+        self._require_origin(source_run_id)
         r = self._record(action_id)
         if r.dispatch != Dispatch.SUBMITTED:
             raise EvidenceError("No observation can be linked to an undispatched action")
@@ -140,8 +147,9 @@ class EvidenceLedger:
         r.terminal_digest = digest
         self._event(action_id, "untrusted_terminal_observed", digest)
 
-    def host_exit(self, action_id: str, status: int) -> None:
+    def host_exit(self, action_id: str, status: int, *, source_run_id: str) -> None:
         """Trusted host receipt only. Nonzero does not exclude partial effects."""
+        self._require_origin(source_run_id)
         r = self._record(action_id)
         if r.dispatch != Dispatch.SUBMITTED or not r.terminal_observed:
             raise EvidenceError("Exit receipt requires dispatched and observed action")
@@ -153,8 +161,9 @@ class EvidenceLedger:
         self._event(action_id, "host_exit_receipt",
                     sha256(str(status).encode()).hexdigest())
 
-    def check_effect(self, action_id: str, adapter: ProbeAdapter) -> Effect:
+    def check_effect(self, action_id: str, adapter: ProbeAdapter, *, source_run_id: str) -> Effect:
         """Check goal at probe time, never infer causal change or persistence."""
+        self._require_origin(source_run_id)
         r = self._record(action_id)
         if r.dispatch != Dispatch.SUBMITTED or not r.terminal_observed:
             raise EvidenceError("Effect check requires submitted and observed action")

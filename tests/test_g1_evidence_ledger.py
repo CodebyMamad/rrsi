@@ -12,6 +12,23 @@ SPEC.loader.exec_module(MOD)
 Ledger, Goal, Effect, Error = MOD.EvidenceLedger, MOD.Goal, MOD.Effect, MOD.EvidenceError
 
 
+class LocallyScopedLedger(MOD.EvidenceLedger):
+    """Test harness supplies the host-side run origin for each event."""
+    def reject(self, action_id):
+        return super().reject(action_id, source_run_id=self.run_id)
+    def submit(self, action_id):
+        return super().submit(action_id, source_run_id=self.run_id)
+    def observe(self, action_id, terminal_text):
+        return super().observe(action_id, terminal_text, source_run_id=self.run_id)
+    def host_exit(self, action_id, status):
+        return super().host_exit(action_id, status, source_run_id=self.run_id)
+    def check_effect(self, action_id, adapter):
+        return super().check_effect(action_id, adapter, source_run_id=self.run_id)
+
+
+Ledger = LocallyScopedLedger
+
+
 class MockTrustedWorld:
     def __init__(self, has_effect):
         self.has_effect = has_effect
@@ -166,3 +183,27 @@ def test_success_exit_does_not_imply_goal_true():
     a.host_exit("a1", 0)
     assert a.check_effect("a1", MockTrustedWorld(False)) == Effect.FALSE_AT_PROBE
     assert a.snapshot("a1")["host_exit_status"] == 0
+
+
+def test_same_name_across_runs_rejects_wrong_origin():
+    a = MOD.EvidenceLedger("run-A")
+    b = MOD.EvidenceLedger("run-B")
+    for x in (a, b):
+        x.propose("same-id", Goal("target-file-changed"))
+        x.submit("same-id", source_run_id=x.run_id)
+    with pytest.raises(Error):
+        a.observe("same-id", "Output from B", source_run_id="run-B")
+    assert a.snapshot("same-id")["terminal_observed"] is False
+    b.observe("same-id", "Output from B", source_run_id="run-B")
+    with pytest.raises(Error):
+        b.check_effect("same-id", MockTrustedWorld(True), source_run_id="run-A")
+    with pytest.raises(Error):
+        b.host_exit("same-id", 0, source_run_id="run-A")
+    assert b.snapshot("same-id")["effect"] == "unchecked"
+
+
+def test_missing_origin_is_not_accepted():
+    a = MOD.EvidenceLedger("run-A")
+    a.propose("x", Goal("target-file-changed"))
+    with pytest.raises(TypeError):
+        a.submit("x")

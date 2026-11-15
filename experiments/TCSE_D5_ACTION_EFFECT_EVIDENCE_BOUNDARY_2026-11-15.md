@@ -73,3 +73,20 @@ D5_RESTRICTED_LEDGER_CORRECTNESS / NO_TASK_COMPETENCE_EVIDENCE.
 Next frontier is a trusted, goal-specific observation adapter in
 a separately instrumented isolated environment. If it cannot be
 provided, abstain rather than run further prompt-only evaluations.
+
+
+## D5.1 adversarial correction — colliding local action IDs
+
+The first D5 draft allowed the same local action ID to occur in two
+different runs and did not require the evidence-producing caller to name
+the run. A concrete replay accidentally routed a run-B observation to
+run-A under the same ID; the first draft accepted it.
+
+D5.1 repairs this interface: EVERY rejection, dispatch, observation,
+host-exit and postcondition check requires a source_run_id that must
+exactly equal the ledger run ID. Missing/mismatched origins fail closed.
+Two additional tests reproduce and reject the old collision. This is
+an honest-host consistency constraint, not cryptographic authentication:
+a malicious producer could lie about its source_run_id. Real harness
+integration therefore still requires a trusted receipt producer.
+The revised offline D5 test count is 18.
