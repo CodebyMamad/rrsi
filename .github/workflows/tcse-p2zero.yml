@@ -9,7 +9,7 @@ name: TCSE P2-zero real-search round (Claude Pro via Claude Code, $0)
 #   is degenerate here and nothing in this run measures improvement.
 on:
   push:
-    branches: ["tcse/p2zero-real-search-round"]
+    branches: ["tcse/p2zero-real-search-round", "tcse/infra-budget-admission-2026-11-16"]
   workflow_dispatch:
     inputs:
       run_real:
@@ -21,9 +21,13 @@ on:
         required: true
         default: "opus"
       token_cap:
-        description: "Halt after this many Claude tokens (input + output + cache) across all calls"
+        description: "Token budget enforced BEFORE each call: a call starts only if its reserved upper bound (input bytes + 4096 + output ceiling) fits. Conservative admission control, not a provider-enforced cap"
         required: true
         default: "6000000"
+      max_calls:
+        description: "Hard cap on Claude Code invocations (0 = none). A token check uses 1 with token_cap >= 30000"
+        required: true
+        default: "0"
 permissions:
   contents: read
 concurrency:
@@ -80,6 +84,7 @@ jobs:
       RECEIPT: ${{ github.workspace }}/p2zero_real_receipt
       SEARCH_MODEL: ${{ github.event.inputs.search_model }}
       TOKEN_CAP: ${{ github.event.inputs.token_cap }}
+      MAX_CALLS: ${{ github.event.inputs.max_calls }}
       CLAUDE_CODE_VERSION: "2.1.311"
       OLLAMA_IMAGE: ollama/ollama@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
       RRSI_POLICY_MODEL: ollama_chat/qwen2.5-coder:1.5b
@@ -108,7 +113,8 @@ jobs:
           shopt -s nocasematch
           if [[ "$SEARCH_MODEL" =~ fable|mythos ]]; then echo "BLOCKED: $SEARCH_MODEL refused by the zero-spend guard"; exit 1; fi
           case "$TOKEN_CAP" in ''|*[!0-9]*) echo "BLOCKED: token_cap must be a positive integer"; exit 1;; esac
-          echo "search model: $SEARCH_MODEL ; token cap: $TOKEN_CAP"
+          case "$MAX_CALLS" in ''|*[!0-9]*) echo "BLOCKED: max_calls must be a non-negative integer"; exit 1;; esac
+          echo "search model: $SEARCH_MODEL ; token budget (pre-call admission): $TOKEN_CAP ; call cap: $MAX_CALLS"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -150,7 +156,8 @@ jobs:
           set -euo pipefail
           nohup python scripts/tcse_claude_cli_shim.py --port 8765 \
             --ledger "$RECEIPT/claude_calls.jsonl" --dump-dir "$RECEIPT/claude_io" \
-            --token-cap "$TOKEN_CAP" --max-parallel 3 --timeout 600 \
+            --token-cap "$TOKEN_CAP" --max-calls "$MAX_CALLS" \
+            --max-output-tokens "$RRSI_SEARCH_MAX_TOKENS" --max-parallel 3 --timeout 600 \
             > "$RECEIPT/adapter.log" 2>&1 &
           for i in $(seq 1 30); do curl --silent --fail http://127.0.0.1:8765/health >/dev/null && break; sleep 1; done
           curl --silent --fail http://127.0.0.1:8765/health

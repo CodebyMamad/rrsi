@@ -186,25 +186,34 @@ def test_rrsi_generate_reaches_claude_code_through_the_adapter(fake_claude, tmp_
 
 
 def test_zero_spend_guards_refuse_and_cap(fake_claude, tmp_path):
+    # 2026-11-16 semantics: the cap is enforced BEFORE a call by reserving its
+    # upper bound (tests/test_shim_budget.py holds the full budget gate).
     exe, log = fake_claude
-    adapter = shim.Adapter(claude_bin=str(exe), ledger=tmp_path / "ledger.jsonl", token_cap=150)
+    system = "You are a harness engineer agent."
+    reservation = shim.BudgetGuard().reservation(system, "x", shim.DEFAULT_MAX_OUTPUT_TOKENS)
+    adapter = shim.Adapter(claude_bin=str(exe), ledger=tmp_path / "ledger.jsonl",
+                           token_cap=reservation + 50)
     server, base = _start(adapter)
     try:
-        msgs = _msgs("You are a harness engineer agent.")
+        msgs = _msgs(system)
         st, body = _post(base, {"model": "claude-fable-5-2", "messages": msgs})
         assert st == 400 and "refused" in body["error"]["message"]
-        st, _ = _post(base, {"model": "opus", "messages": msgs})       # 100 tokens
+        st, _ = _post(base, {"model": "opus", "messages": msgs})       # fits; uses 100 tokens
         assert st == 200 and adapter.halted is None
-        st, _ = _post(base, {"model": "opus", "messages": msgs})       # 200 >= cap: halts after
-        assert st == 200 and adapter.halted and "token cap" in adapter.halted
+        st, body = _post(base, {"model": "opus", "messages": msgs})    # 100 + reservation > cap
+        assert st == 429 and "halted" in body["error"]["message"]
+        assert adapter.halted and "token budget" in adapter.halted
         st, body = _post(base, {"model": "opus", "messages": msgs})
         assert st == 429 and "halted" in body["error"]["message"]
     finally:
         server.shutdown()
         server.server_close()
-    assert len(_calls(log)) == 2                     # refused and halted calls never reach claude
-    roles = {r["role"] for r in _calls(tmp_path / "ledger.jsonl")}
-    assert roles == {"proposer"}
+    assert len(_calls(log)) == 1                     # refused and halted calls never reach claude
+    rec = _calls(tmp_path / "ledger.jsonl")
+    assert {r["role"] for r in rec} == {"proposer"}
+    assert [r["failure_class"] for r in rec] == ["model_refused", None, "budget_refused",
+                                                 "halted_refused"]
+    assert adapter.guard.state()["charged"] == 100
 
 
 def _sequence(exe, tmp_path, monkeypatch, modes):
@@ -232,7 +241,7 @@ def test_transient_failure_does_not_halt_despite_credit_field(fake_claude, tmp_p
     assert res[0][0] == 502 and adapter.halted is None
     assert res[1][0] == 200 and len(_calls(log)) == 2
     rec = _calls(tmp_path / "ledger.jsonl")
-    assert [r["failure_class"] for r in rec] == ["other", None]
+    assert [r["failure_class"] for r in rec] == ["transient", None]
     assert rec[0]["api_error_status"] == 529
 
 
