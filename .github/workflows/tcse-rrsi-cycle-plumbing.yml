@@ -1,0 +1,61 @@
+name: TCSE P1 RRSI full-cycle plumbing gate (no model, no Docker)
+# PLUMBING-ONLY: scripted model replies and a synthetic domain drive the
+# UNMODIFIED rrsi/ loop of frozen be50316 through baseline -> round 0 ->
+# round 1 and a crash/resume. A green run says the control flow executes;
+# it says nothing about method efficacy or paper reproduction.
+on:
+  push:
+    branches: ["tcse/rrsi-cycle-plumbing"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tcse-p1-plumbing
+  cancel-in-progress: false
+jobs:
+  plumbing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RRSI_PLUMBING_RECEIPT_DIR: ${{ github.workspace }}/p1_receipt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Provenance - core identical to frozen be50316
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BASE=be50316e1db05914068a973f322770ef08ed7ba1
+          mkdir -p "$RRSI_PLUMBING_RECEIPT_DIR"
+          git rev-parse HEAD | tee "$RRSI_PLUMBING_RECEIPT_DIR/head_sha.txt"
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --stat "$BASE" HEAD | tee "$RRSI_PLUMBING_RECEIPT_DIR/diff_vs_frozen.txt"
+          test -z "$(git diff --name-only "$BASE" HEAD -- rrsi rrsi.py domains third_party pyproject.toml)"
+          { python -V; git --version; uname -sr; } | tee "$RRSI_PLUMBING_RECEIPT_DIR/versions.txt"
+      - name: Install the test runner only (no anthropic, no harbor, no docker)
+        run: python -m pip install "pytest==8.3.5"
+      - name: P1 plumbing gate and upstream core tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -v -rA -p no:cacheprovider \
+            tests/test_cycle_plumbing.py tests/test_core.py 2>&1 | tee "$RRSI_PLUMBING_RECEIPT_DIR/pytest.txt"
+      - name: Receipt manifest
+        if: always()
+        shell: bash
+        run: |
+          cd "$RRSI_PLUMBING_RECEIPT_DIR"
+          python -c "import importlib.util as u; print('anthropic importable:', u.find_spec('anthropic') is not None)" | tee -a versions.txt
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          wc -l SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tcse-p1-cycle-plumbing-receipt
+          path: p1_receipt/
+          retention-days: 30
+          if-no-files-found: error
