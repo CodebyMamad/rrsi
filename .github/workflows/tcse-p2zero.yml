@@ -98,7 +98,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${CLAUDE_CODE_OAUTH_TOKEN}" ]; then echo "BLOCKED: repository secret CLAUDE_CODE_OAUTH_TOKEN is not set"; exit 1; fi
-          if printf '%s' "$SEARCH_MODEL" | grep -qiE 'fable|mythos'; then echo "BLOCKED: $SEARCH_MODEL refused by the zero-spend guard"; exit 1; fi
+          shopt -s nocasematch
+          if [[ "$SEARCH_MODEL" =~ fable|mythos ]]; then echo "BLOCKED: $SEARCH_MODEL refused by the zero-spend guard"; exit 1; fi
           case "$TOKEN_CAP" in ''|*[!0-9]*) echo "BLOCKED: token_cap must be a positive integer"; exit 1;; esac
           echo "search model: $SEARCH_MODEL ; token cap: $TOKEN_CAP"
       - uses: actions/checkout@v4
@@ -122,7 +123,7 @@ jobs:
           domains/coding/.venv/bin/pip install 'harbor==0.26.0'
           PYTHONPATH=third_party domains/coding/.venv/bin/python -c 'from harbor_terminus2 import AgentHarness; assert AgentHarness.name() == "rrsi-terminus2"; print("AGENT_CONSTRUCTOR_IMPORT_OK")'
           npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
-          { git rev-parse HEAD; python -V; git --version; docker --version; node --version; claude --version; domains/coding/.venv/bin/pip show harbor | head -n 2; python -m pip show litellm | head -n 2; } | tee "$RECEIPT/versions.txt"
+          { git rev-parse HEAD; python -V; git --version; docker --version; node --version; claude --version; domains/coding/.venv/bin/pip show harbor | sed -n '1,2p'; python -m pip show litellm | sed -n '1,2p'; } | tee "$RECEIPT/versions.txt"
       - name: Start the free CPU policy (Qwen2.5-Coder 1.5B, pinned Ollama image, G1 settings)
         shell: bash
         run: |
