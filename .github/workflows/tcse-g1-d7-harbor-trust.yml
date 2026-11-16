@@ -1,0 +1,43 @@
+name: TCSE D7 Harbor production trust boundary preflight
+on:
+  push:
+    branches: ["tcse/g1-d7-harbor-boundary-audit-2026-11-15"]
+    paths:
+      - ".github/workflows/tcse-g1-d7-harbor-trust.yml"
+      - "scripts/tcse_harbor_trust_gate.py"
+      - "tests/test_g1_harbor_trust_gate.py"
+      - "tests/fixtures/tcse_d7_historical_mode_receipts.json"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-host-trust-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify python guard tests (no model and no benchmark)
+        run: |
+          python -m pip install pytest
+          python -m pytest -q tests/test_g1_harbor_trust_gate.py
+      - name: Confirm historical shared verifier is explicitly BLOCKED
+        run: |
+          python scripts/tcse_harbor_trust_gate.py \
+            --fixture tests/fixtures/tcse_d7_historical_mode_receipts.json \
+            --expect-blocked \
+            --output tcse_d7_harbor_receipts/report.json
+      - name: Save provenance
+        if: always()
+        run: |
+          mkdir -p tcse_d7_harbor_receipts
+          git rev-parse HEAD > tcse_d7_harbor_receipts/commit.txt
+          sha256sum scripts/tcse_harbor_trust_gate.py > tcse_d7_harbor_receipts/gate_sha256.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tcse-d7-production-trust-blocker
+          path: tcse_d7_harbor_receipts/
+          retention-days: 14

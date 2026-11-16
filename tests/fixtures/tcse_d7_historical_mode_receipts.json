@@ -1,0 +1,45 @@
+{
+  "source": "Historical unchanged Harbor 0.26.0 G1 receipts from runs 43751293319 and 43761001377; SHA-256 values independently extracted from downloaded ZIPs.",
+  "trials": [
+    {
+      "record_id": "D3-observe/extract-elf",
+      "task": "terminal-bench/extract-elf",
+      "task_ref": "sha256:1ef31d566be4fe3459d5368621ae7ef7a31b23ef675737e473bbc43c8c7b3fce",
+      "task_checksum": "642b0321f77002c7c9a70acb825b31295d0a6baf07a5c3880ca5b30461fbbdcb",
+      "verifier_mode": "shared",
+      "reward_valid": true,
+      "has_verifier_result": true,
+      "raw_result_sha256": "4ff97599d51f7fce115a0c970582ed1a3c2d3ef2b0610a23146c3ecb897fa3ae"
+    },
+    {
+      "record_id": "D3-observe/fix-git",
+      "task": "terminal-bench/fix-git",
+      "task_ref": "sha256:16948b980df9d96de616a205f5acca1c5d395de83ff4f8ffabcafacb93226f2e",
+      "task_checksum": "d3220d70bc668ec6f4034fab51e62873dff724a61f824d764fd201d6f5e7a88a",
+      "verifier_mode": "shared",
+      "reward_valid": true,
+      "has_verifier_result": true,
+      "raw_result_sha256": "92f9bc4dcb34f6f061f95fc5f7ea510e9deb6a58625fd517239fea42c4abfff5"
+    },
+    {
+      "record_id": "D3-feedback/extract-elf",
+      "task": "terminal-bench/extract-elf",
+      "task_ref": "sha256:1ef31d566be4fe3459d5368621ae7ef7a31b23ef675737e473bbc43c8c7b3fce",
+      "task_checksum": "642b0321f77002c7c9a70acb825b31295d0a6baf07a5c3880ca5b30461fbbdcb",
+      "verifier_mode": "shared",
+      "reward_valid": true,
+      "has_verifier_result": true,
+      "raw_result_sha256": "159d077d2a0aac5aad9d67e4c2f7895091147a88a9dc38cabd83b1853d1ae4f9"
+    },
+    {
+      "record_id": "D3-feedback/fix-git",
+      "task": "terminal-bench/fix-git",
+      "task_ref": "sha256:16948b980df9d96de616a205f5acca1c5d395de83ff4f8ffabcafacb93226f2e",
+      "task_checksum": "d3220d70bc668ec6f4034fab51e62873dff724a61f824d764fd201d6f5e7a88a",
+      "verifier_mode": "shared",
+      "reward_valid": true,
+      "has_verifier_result": true,
+      "raw_result_sha256": "3807672d572535272e091c2ec52a5bdb5f09aee1865d3e6958532bc6dfe16b98"
+    }
+  ]
+}
