@@ -1,0 +1,255 @@
+name: TCSE P2-zero real-search round (Claude Pro via Claude Code, $0)
+# offline (every push): the Claude Code adapter and the coding_mini domain are
+#   tested with a fake `claude`, and the P1 plumbing gate is re-run on this
+#   provider-flex base. No model, no Docker, no secret.
+# real (manual dispatch with run_real=yes ONLY): ONE RRSI round. The four
+#   search roles are real Claude, through the owner's CLAUDE_CODE_OAUTH_TOKEN;
+#   the policy is the free CPU Qwen2.5-Coder 1.5B on real Harbor, the setup
+#   that passed G1. INTEGRATION-ONLY: the weak policy scores ~0, so Algorithm 2
+#   is degenerate here and nothing in this run measures improvement.
+on:
+  push:
+    branches: ["tcse/p2zero-real-search-round"]
+  workflow_dispatch:
+    inputs:
+      run_real:
+        description: "Type yes to run the real round (uses your Claude Pro allowance; usage credits must be OFF)"
+        required: true
+        default: "no"
+      search_model:
+        description: "Claude Code model for the four search roles (Fable and Mythos are refused)"
+        required: true
+        default: "opus"
+      token_cap:
+        description: "Halt after this many Claude tokens (input + output + cache) across all calls"
+        required: true
+        default: "6000000"
+permissions:
+  contents: read
+concurrency:
+  group: tcse-p2zero
+  cancel-in-progress: false
+env:
+  PROVIDER_FLEX: 448119e5115e7d1a95ae53cc6435f206074bf403
+  FROZEN_ORIGINAL: be50316e1db05914068a973f322770ef08ed7ba1
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RECEIPT: ${{ github.workspace }}/p2zero_offline_receipt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Provenance - RRSI core and coding domain unchanged
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RECEIPT"
+          git rev-parse HEAD | tee "$RECEIPT/head_sha.txt"
+          git merge-base --is-ancestor "$PROVIDER_FLEX" HEAD
+          git diff --stat "$PROVIDER_FLEX" HEAD | tee "$RECEIPT/diff_vs_provider_flex.txt"
+          test -z "$(git diff --name-only "$PROVIDER_FLEX" HEAD -- rrsi rrsi.py domains/coding third_party pyproject.toml)"
+          # the loop modules P1 exercises are byte-identical to the frozen original
+          test -z "$(git diff --name-only "$FROZEN_ORIGINAL" HEAD -- rrsi ':!rrsi/llm.py' ':!rrsi/config.py')"
+      - name: Install RRSI core (provider-flex) and the test runner
+        run: python -m pip install -e '.[dev]' "litellm==1.109.1"
+      - name: Offline gate - fake claude, no model, no Docker
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -v -rA -p no:cacheprovider tests/ 2>&1 | tee "$RECEIPT/pytest.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tcse-p2zero-offline-receipt
+          path: p2zero_offline_receipt/
+          retention-days: 30
+
+  real:
+    needs: offline
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_real == 'yes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      RECEIPT: ${{ github.workspace }}/p2zero_real_receipt
+      SEARCH_MODEL: ${{ github.event.inputs.search_model }}
+      TOKEN_CAP: ${{ github.event.inputs.token_cap }}
+      CLAUDE_CODE_VERSION: "2.1.311"
+      OLLAMA_IMAGE: ollama/ollama@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
+      RRSI_POLICY_MODEL: ollama_chat/qwen2.5-coder:1.5b
+      RRSI_POLICY_API_BASE: http://127.0.0.1:11434
+      RRSI_POLICY_MAX_TURNS: "12"
+      RRSI_SEARCH_BACKEND: litellm
+      RRSI_SEARCH_API_BASE: http://127.0.0.1:8765/v1
+      RRSI_SEARCH_API_KEY: tcse-local-adapter
+      RRSI_SEARCH_MAX_TOKENS: "20000"
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+    steps:
+      - name: Guard - owner token present, model allowed, cap numeric
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN}" ]; then echo "BLOCKED: repository secret CLAUDE_CODE_OAUTH_TOKEN is not set"; exit 1; fi
+          if printf '%s' "$SEARCH_MODEL" | grep -qiE 'fable|mythos'; then echo "BLOCKED: $SEARCH_MODEL refused by the zero-spend guard"; exit 1; fi
+          case "$TOKEN_CAP" in ''|*[!0-9]*) echo "BLOCKED: token_cap must be a positive integer"; exit 1;; esac
+          echo "search model: $SEARCH_MODEL ; token cap: $TOKEN_CAP"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install RRSI core, Harbor 0.26.0 (as G1) and Claude Code CLI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RECEIPT"
+          python -m pip install -e '.[dev]' "litellm==1.109.1"
+          python -m venv domains/coding/.venv
+          domains/coding/.venv/bin/python -m pip install --upgrade pip
+          domains/coding/.venv/bin/pip install 'harbor==0.26.0'
+          PYTHONPATH=third_party domains/coding/.venv/bin/python -c 'from harbor_terminus2 import AgentHarness; assert AgentHarness.name() == "rrsi-terminus2"; print("AGENT_CONSTRUCTOR_IMPORT_OK")'
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          { git rev-parse HEAD; python -V; git --version; docker --version; node --version; claude --version; domains/coding/.venv/bin/pip show harbor | head -n 2; python -m pip show litellm | head -n 2; } | tee "$RECEIPT/versions.txt"
+      - name: Start the free CPU policy (Qwen2.5-Coder 1.5B, pinned Ollama image, G1 settings)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run -d --name tcse-ollama -p 127.0.0.1:11434:11434 -e OLLAMA_NUM_PARALLEL=1 -e OLLAMA_MAX_LOADED_MODELS=1 "$OLLAMA_IMAGE"
+          for i in $(seq 1 60); do curl --silent --fail http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 2; done
+          docker exec tcse-ollama ollama pull qwen2.5-coder:1.5b
+          curl --fail --max-time 180 http://127.0.0.1:11434/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"qwen2.5-coder:1.5b","messages":[{"role":"user","content":"Reply OK."}],"max_tokens":16}' \
+            | python -c 'import json,sys; o=json.load(sys.stdin); print("POLICY_PROBE_OK", bool(o["choices"][0]["message"]["content"]))'
+      - name: Start the Claude Code adapter (the token lives only in this process)
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          nohup python scripts/tcse_claude_cli_shim.py --port 8765 \
+            --ledger "$RECEIPT/claude_calls.jsonl" --dump-dir "$RECEIPT/claude_io" \
+            --token-cap "$TOKEN_CAP" --max-parallel 3 --timeout 600 \
+            > "$RECEIPT/adapter.log" 2>&1 &
+          for i in $(seq 1 30); do curl --silent --fail http://127.0.0.1:8765/health >/dev/null && break; sleep 1; done
+          curl --silent --fail http://127.0.0.1:8765/health
+      - name: Preflight - one tiny call through RRSI's own LiteLLM search path
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from rrsi import llm
+          out = llm.generate("Reply with exactly: OK", system="TCSE preflight. Follow the user's instruction exactly.",
+                             model="openai/" + os.environ["SEARCH_MODEL"], max_retries=1)
+          print("PREFLIGHT_REPLY", out[:80].replace("\n", " "))
+          assert "OK" in out, out[:200]
+          PY
+      - name: Baseline - Evaluate(H_0) on the two official smoke tasks with the CPU policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RRSI_SEARCH_MODEL="openai/${SEARCH_MODEL}"
+          timeout 3600 python rrsi.py --domain coding_mini baseline
+      - name: Round 0 - real Claude analyst, digesters, proposer and critic; real Harbor smoke and evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RRSI_SEARCH_MODEL="openai/${SEARCH_MODEL}"
+          timeout 9000 python rrsi.py --domain coding_mini round --t 0
+          python rrsi.py --domain coding_mini status | tee "$RECEIPT/status.txt"
+      - name: Receipt
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$RECEIPT"
+          curl --silent http://127.0.0.1:8765/health > "$RECEIPT/adapter_final_health.json"
+          pkill -f tcse_claude_cli_shim.py
+          rsync -a --exclude 'wt/' runs/coding_mini/ "$RECEIPT/runs_state/"
+          git for-each-ref --format='%(refname) %(objectname)' refs/heads > "$RECEIPT/git_refs.txt"
+          git log --all --graph --decorate --format='%h %s' > "$RECEIPT/git_graph.txt"
+          for b in $(git for-each-ref --format='%(refname:short)' refs/heads/coding_mini/ refs/heads/evolve/); do
+            echo "=== $b"; git diff HEAD "$b" -- third_party/harbor_terminus2
+          done > "$RECEIPT/candidate_and_evolve_diffs.patch"
+          docker logs tcse-ollama --tail 100 > "$RECEIPT/ollama.log" 2>&1
+          python - "$RECEIPT" <<'PY'
+          import collections, json, sys
+          from pathlib import Path
+          sys.path.insert(0, ".")
+          from rrsi.llm import extract_json
+          R = Path(sys.argv[1])
+          calls = [json.loads(x) for x in (R / "claude_calls.jsonl").read_text().splitlines()] \
+              if (R / "claude_calls.jsonl").exists() else []
+          by = collections.defaultdict(lambda: {"calls": 0, "ok": 0, "tokens": 0, "cost_estimate_usd": 0.0,
+                                                "json_parse_failures": 0, "served_models": set()})
+          for c in calls:
+              s = by[c.get("role", "?")]
+              s["calls"] += 1
+              s["tokens"] += c.get("tokens") or 0
+              s["cost_estimate_usd"] += c.get("cost_estimate_usd") or 0.0
+              s["served_models"].update(c.get("served_models") or [])
+              if c.get("status") == 200:
+                  s["ok"] += 1
+                  out = R / "claude_io" / f"{c['n']:04d}_{c['role']}_stdout.json"
+                  try:
+                      json.loads(extract_json(json.loads(out.read_text())["result"]))
+                  except Exception:
+                      if c.get("role") in ("analyst", "digester", "proposer", "critic"):
+                          s["json_parse_failures"] += 1
+          state = R / "runs_state"
+          fr = json.loads((state / "frontier.json").read_text()) if (state / "frontier.json").exists() else {}
+          hist = [json.loads(x) for x in (state / "history.jsonl").read_text().splitlines()] \
+              if (state / "history.jsonl").exists() else []
+          summary = {
+              "label": "P2-zero: integration-only; weak policy, degenerate selection, no improvement claim",
+              "roles": {k: {**v, "served_models": sorted(v["served_models"]),
+                            "cost_estimate_usd": round(v["cost_estimate_usd"], 4)} for k, v in by.items()},
+              "total_tokens": sum(c.get("tokens") or 0 for c in calls),
+              "total_cost_estimate_usd": round(sum(c.get("cost_estimate_usd") or 0.0 for c in calls), 4),
+              "adapter_halted": next((c.get("halted_after") for c in reversed(calls) if c.get("halted_after")), None),
+              "trajectory": fr.get("trajectory"),
+              "history": [{k: r.get(k) for k in ("t", "variant", "component", "outcome", "delta_S", "detail")} for r in hist],
+          }
+          (R / "summary.json").write_text(json.dumps(summary, indent=1))
+          print(json.dumps(summary, indent=1)[:6000])
+          PY
+          true
+      - name: Secret scan of the receipt (the token must never be uploaded)
+        if: always()
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set +e
+          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ -d "$RECEIPT" ]; then
+            hits=$(grep -rlF -- "$CLAUDE_CODE_OAUTH_TOKEN" "$RECEIPT")
+            if [ -n "$hits" ]; then
+              echo "token found in $(echo "$hits" | wc -l) file(s); deleting them before upload"
+              echo "$hits" | xargs -r rm -f
+              echo "$hits" > "$RECEIPT/SECRET_SCAN_REMOVED_FILES.txt"
+            else
+              echo "secret scan clean"
+            fi
+          fi
+          cd "$RECEIPT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tcse-p2zero-real-receipt
+          path: p2zero_real_receipt/
+          retention-days: 30
