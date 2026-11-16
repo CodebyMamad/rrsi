@@ -18,14 +18,20 @@ Zero-spend guards (the owner's budget is $0):
   * API-key, bearer-token, profile and cloud-provider variables are removed
     from the child environment, so Claude Code cannot fall back to API billing;
   * Fable and Mythos models are refused (on some plans they bill usage credits);
-  * a usage-limit or credit message from Claude Code halts the adapter: every
-    later request fails fast with HTTP 429 instead of retrying;
+  * failures are classified from Claude Code's own `api_error_status` and its
+    result message, never from raw JSON (every result carries field names
+    such as `fallback_credit`):
+      - 401/403 or an authentication message: halt, later requests get 401;
+      - 402/429 or a usage-limit/credit message: halt, later requests get 429;
+      - anything else (e.g. 529 overloaded): HTTP 502 for that call only;
   * an optional cumulative token cap halts the adapter the same way.
 The account-side guard (usage credits switched off) is the owner's.
 
-Every call is recorded in a JSONL ledger; prompts, system texts and raw
-Claude Code output can be dumped for audit. The token is scrubbed from
-everything written to disk.
+The token is read once at start-up with all whitespace removed (a long token
+copied from a wrapped terminal line can carry line breaks); only non-secret
+diagnostics about it are printed. Every call is recorded in a JSONL ledger;
+prompts, system texts and raw Claude Code output can be dumped for audit.
+Every form of the token is scrubbed from everything written to disk.
 """
 
 from __future__ import annotations
@@ -48,8 +54,15 @@ STRIP_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
              "ANTHROPIC_ORGANIZATION_ID", "CLAUDE_CODE_USE_BEDROCK",
              "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
 REFUSED_MODEL = re.compile(r"fable|mythos", re.I)
+# Matched against Claude Code's result message and stderr only, never raw JSON.
+AUTH_TEXT = re.compile(r"failed to authenticate|invalid bearer|invalid api key|not logged in|"
+                       r"please run /login|login expired|token (has )?expired|"
+                       r"authentication_error|oauth_org_not_allowed", re.I)
 LIMIT_TEXT = re.compile(r"usage limit|limit reached|hit your limit|limit will reset|"
-                        r"rate.?limit|quota|out of (extra )?usage|credit", re.I)
+                        r"rate.?limit|quota|out of (extra )?usage|usage credits?|"
+                        r"credit balance|billing", re.I)
+AUTH_STATUS = (401, 403)
+LIMIT_STATUS = (402, 429)
 ROLES = (("You are the batch analyst", "analyst"),
          ("You are a trajectory digester", "digester"),
          ("You are a harness engineer agent", "proposer"),
@@ -124,12 +137,26 @@ class Adapter:
         self.tokens = 0
         self.cost = 0.0
         self.halted: str | None = None
-        self._secret = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
+        self.halt_status = 429
+        raw = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+        self._token_raw = raw
+        self._token = "".join(raw.split()) if raw is not None else None
+        self._secrets = sorted({s for s in (raw, (raw or "").strip(), self._token)
+                                if s and len(s) >= 8}, key=len, reverse=True)
+
+    def token_diagnostics(self) -> dict:
+        """Non-secret facts about the token: never its value or any part of it."""
+        raw, clean = self._token_raw, self._token or ""
+        return {"present": bool(clean), "length": len(clean),
+                "whitespace_removed": raw is not None and raw != clean,
+                "setup_token_prefix": clean.startswith("sk-ant-oat"),
+                "looks_like_api_key": clean.startswith("sk-ant-api")}
 
     # ------------------------------------------------------------ audit ---
     def scrub(self, s):
-        if isinstance(s, str) and len(self._secret) >= 8:
-            return s.replace(self._secret, "[redacted]")
+        if isinstance(s, str):
+            for secret in self._secrets:
+                s = s.replace(secret, "[redacted]")
         return s
 
     def _record(self, rec: dict) -> None:
@@ -149,6 +176,8 @@ class Adapter:
     # ------------------------------------------------------------- core ---
     def _run(self, model: str, system: str, user: str):
         env = {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
+        if self._token is not None:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = self._token
         with tempfile.TemporaryDirectory(prefix="tcse-claude-") as td:
             work, cfg = Path(td) / "work", Path(td) / "config"
             work.mkdir()
@@ -185,14 +214,16 @@ class Adapter:
         role = role_of(system)
         with self.lock:
             self.n += 1
-            n, halted = self.n, self.halted
+            n, halted, halt_status = self.n, self.halted, self.halt_status
         base = {"n": n, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "role": role, "requested_model": model, "system_chars": len(system),
                 "prompt_chars": len(user),
                 "prompt_sha256": hashlib.sha256(user.encode("utf-8")).hexdigest()}
         if halted:
-            self._record({**base, "status": 429, "invoked": False, "error": f"halted: {halted}"})
-            return 429, _err(f"adapter halted: {halted}", "rate_limit_exceeded")
+            self._record({**base, "status": halt_status, "invoked": False,
+                          "error": f"halted: {halted}"})
+            kind = "authentication_error" if halt_status in AUTH_STATUS else "rate_limit_exceeded"
+            return halt_status, _err(f"adapter halted: {halted}", kind)
         if not model or REFUSED_MODEL.search(model):
             self._record({**base, "status": 400, "invoked": False, "error": "model refused"})
             return 400, _err(f"model {model!r} refused by the zero-spend guard",
@@ -215,18 +246,35 @@ class Adapter:
             if isinstance(data.get("modelUsage"), dict) else []
         ok = (rc == 0 and not data.get("is_error") and isinstance(text, str)
               and text.strip() != "")
-        limit_hit = (not ok) and bool(LIMIT_TEXT.search(f"{text or ''} {err or ''} {out[-2000:]}"))
+        try:
+            api_status = int(data["api_error_status"]) \
+                if data.get("api_error_status") is not None else None
+        except (TypeError, ValueError):
+            api_status = None
+        # Evidence is Claude Code's result message and stderr only: raw JSON
+        # carries field names such as fallback_credit in every result.
+        evidence = f"{text if isinstance(text, str) else ''} {err or ''}"
+        auth_fail = (not ok) and (api_status in AUTH_STATUS or bool(AUTH_TEXT.search(evidence)))
+        limit_hit = (not ok) and not auth_fail and (
+            api_status in LIMIT_STATUS or bool(LIMIT_TEXT.search(evidence)))
         with self.lock:
             self.tokens += tokens
             self.cost += cost
             cum_tokens, cum_cost = self.tokens, round(self.cost, 6)
+            if auth_fail and not self.halted:
+                self.halted = f"authentication failed (HTTP {api_status})"
+                self.halt_status = 401
             if limit_hit and not self.halted:
-                self.halted = "usage limit or credit message from Claude Code"
+                self.halted = f"usage limit or credit message from Claude Code (HTTP {api_status})"
+                self.halt_status = 429
             if self.token_cap and cum_tokens >= self.token_cap and not self.halted:
                 self.halted = f"token cap {self.token_cap} reached"
+                self.halt_status = 429
             halted_now = self.halted
-        status = 200 if ok else (429 if limit_hit else 502)
+        status = 200 if ok else (401 if auth_fail else (429 if limit_hit else 502))
         self._record({**base, "status": status, "invoked": True, "returncode": rc,
+                      "api_error_status": api_status, "failure_class":
+                      None if ok else ("auth" if auth_fail else ("limit" if limit_hit else "other")),
                       "wall_s": wall, "is_error": bool(data.get("is_error")),
                       "subtype": data.get("subtype"), "num_turns": data.get("num_turns"),
                       "duration_ms": data.get("duration_ms"),
@@ -242,8 +290,10 @@ class Adapter:
                                "stdout.json": out, "stderr.txt": err})
         if ok:
             return 200, _completion(n, model, text, usage)
-        kind = "rate_limit_exceeded" if limit_hit else "server_error"
-        return status, _err(f"claude -p failed (rc={rc}): {str(text or err)[:300]}", kind)
+        kind = ("authentication_error" if auth_fail else
+                ("rate_limit_exceeded" if limit_hit else "server_error"))
+        return status, _err(self.scrub(f"claude -p failed (rc={rc}): {str(text or err)[:300]}"),
+                            kind)
 
 
 def make_server(adapter: Adapter, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
@@ -308,6 +358,11 @@ def main(argv=None) -> None:
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         sys.exit("refusing to bind a non-loopback address")
     adapter = Adapter(a.claude_bin, a.ledger, a.dump_dir, a.token_cap, a.max_parallel, a.timeout)
+    diag = adapter.token_diagnostics()
+    print(f"[tcse-shim] token diagnostics (value never printed): {json.dumps(diag)}", flush=True)
+    if diag["looks_like_api_key"]:
+        sys.exit("refusing to start: CLAUDE_CODE_OAUTH_TOKEN holds an Anthropic API key, "
+                 "not a subscription token from `claude setup-token`")
     server = make_server(adapter, a.host, a.port)
     print(f"[tcse-shim] listening on http://{a.host}:{server.server_address[1]}/v1 "
           f"(token cap {a.token_cap or 'none'})", flush=True)
